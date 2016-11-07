@@ -27,6 +27,15 @@ func TestUnspentTransactions(t *testing.T) {
 	}
 }
 
+func TestUnspentTransaction(t *testing.T) {
+	b := BlockrUnspentItem{
+		Amount: "0.00020000",
+	}
+	if b.Satoshis() != 20000 {
+		t.Fail()
+	}
+}
+
 func TestRedisAddressesSet(t *testing.T) {
 	Client.ZAdd("seen_addresses", redis.Z{
 		float64(time.Now().Unix()), "hello",

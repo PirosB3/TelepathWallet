@@ -1,8 +1,10 @@
 package wallet
 
 import (
+	"encoding/json"
 	"gopkg.in/redis.v5"
 	"log"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -11,6 +13,7 @@ import (
 )
 
 const (
+	SATOSHI_IN_BITCOIN     = 100000000
 	REFRESH_ADDRESSES_TIME = time.Minute * 1
 	REFRESH_UTXO_TIME      = time.Minute * 2
 	BLOCKR_UTXO_ADDRESS    = "http://btc.blockr.io/api/v1/address/unspent/"
@@ -30,8 +33,33 @@ func init() {
 		log.Ldate|log.Ltime|log.Lshortfile)
 }
 
+type BlockrUnspentItem struct {
+	Tx            string `json:"tx"`
+	Amount        string `json:"amount"`
+	Idx           int    `json:"n"`
+	Confirmations int    `json:"confirmations"`
+}
+
+func (b *BlockrUnspentItem) Satoshis() int64 {
+	amountFloat, err := strconv.ParseFloat(b.Amount, 64)
+	if err != nil {
+		Error.Fatal(err)
+	}
+	res := amountFloat * SATOSHI_IN_BITCOIN
+	return int64(res)
+}
+
+type BlockrUnspentResponse struct {
+	Status string `json:"status"`
+	Data   []struct {
+		Address string              `json:"status"`
+		Unspent []BlockrUnspentItem `json:"unspent"`
+	} `json:"data"`
+}
+
 type UnspentTransactionMonitor struct {
 	sync.RWMutex
+	netClient                        *http.Client
 	client                           *redis.Client
 	addressList                      []string
 	fetchAddressesTicker             *time.Ticker
@@ -63,12 +91,52 @@ func (utm *UnspentTransactionMonitor) getAddressesToMonitor() []string {
 	if err != nil {
 		Error.Fatal(err)
 	}
-	Info.Println(len(results))
 	return results
 }
 
+func (utm *UnspentTransactionMonitor) Run() {
+	for {
+		select {
+		case <-utm.fetchAddressesTicker.C:
+			utm.Lock()
+			addresses := utm.addressList
+			for len(addresses) > 0 {
+				currentAddresses := addresses[:10]
+				addresses = addresses[10:]
+
+				walletRequest := utm.makeWalletRequest(currentAddresses)
+				response, err := utm.netClient.Get(walletRequest)
+				if err != nil {
+					Error.Fatal(err)
+				}
+
+				var decodedResponse BlockrUnspentResponse
+				decoder := json.NewDecoder(response.Body)
+				decoder.Decode(&decodedResponse)
+
+				if decodedResponse.Status != "success" {
+					Error.Fatal("Decoded response status: " + decodedResponse.Status)
+				}
+
+				for _, entry := range decodedResponse.Data {
+					Info.Print(entry)
+				}
+
+			}
+			utm.Unlock()
+
+		case <-utm.refreshUnspentTransactionsTicker.C:
+			utm.Lock()
+			utm.addressList = utm.getAddressesToMonitor()
+			utm.Unlock()
+		}
+	}
+}
+
 func NewUnspentTransactionMonitor(client *redis.Client) *UnspentTransactionMonitor {
+
 	return &UnspentTransactionMonitor{
+		netClient:                        &http.Client{},
 		client:                           client,
 		fetchAddressesTicker:             time.NewTicker(REFRESH_ADDRESSES_TIME),
 		refreshUnspentTransactionsTicker: time.NewTicker(REFRESH_UTXO_TIME),
