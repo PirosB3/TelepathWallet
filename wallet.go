@@ -2,6 +2,7 @@ package wallet
 
 import (
 	"encoding/json"
+	"fmt"
 	"gopkg.in/redis.v5"
 	"log"
 	"net/http"
@@ -14,8 +15,8 @@ import (
 
 const (
 	SATOSHI_IN_BITCOIN     = 100000000
-	REFRESH_ADDRESSES_TIME = time.Minute * 1
-	REFRESH_UTXO_TIME      = time.Minute * 2
+	REFRESH_ADDRESSES_TIME = time.Second * 2
+	REFRESH_UTXO_TIME      = time.Second * 3
 	BLOCKR_UTXO_ADDRESS    = "http://btc.blockr.io/api/v1/address/unspent/"
 )
 
@@ -52,13 +53,25 @@ func (b *BlockrUnspentItem) Satoshis() int64 {
 type BlockrUnspentResponse struct {
 	Status string `json:"status"`
 	Data   []struct {
-		Address string              `json:"status"`
+		Address string              `json:"address"`
 		Unspent []BlockrUnspentItem `json:"unspent"`
 	} `json:"data"`
 }
 
+type AddressBalanceMapping struct {
+	Address             string
+	Balance             int64
+	UnspentTransactions []BlockrUnspentItem
+}
+
+func (abm *AddressBalanceMapping) ToBTC() string {
+	res := float64(abm.Balance) / SATOSHI_IN_BITCOIN
+	return fmt.Sprintf("%f\n", res)
+}
+
 type UnspentTransactionMonitor struct {
 	sync.RWMutex
+	balances                         map[string]*AddressBalanceMapping
 	netClient                        *http.Client
 	client                           *redis.Client
 	addressList                      []string
@@ -100,9 +113,18 @@ func (utm *UnspentTransactionMonitor) Run() {
 		case <-utm.fetchAddressesTicker.C:
 			utm.Lock()
 			addresses := utm.addressList
+			balances := make(map[string]*AddressBalanceMapping)
 			for len(addresses) > 0 {
-				currentAddresses := addresses[:10]
-				addresses = addresses[10:]
+
+				var slice uint
+				if len(addresses) > 10 {
+					slice = 10
+				} else {
+					slice = uint(len(addresses))
+				}
+
+				currentAddresses := addresses[:slice]
+				addresses = addresses[slice:]
 
 				walletRequest := utm.makeWalletRequest(currentAddresses)
 				response, err := utm.netClient.Get(walletRequest)
@@ -119,23 +141,37 @@ func (utm *UnspentTransactionMonitor) Run() {
 				}
 
 				for _, entry := range decodedResponse.Data {
-					Info.Print(entry)
+
+					address := entry.Address
+					var balance int64
+					for _, record := range entry.Unspent {
+						balance += record.Satoshis()
+					}
+					balances[address] = &AddressBalanceMapping{
+						Address:             address,
+						Balance:             balance,
+						UnspentTransactions: entry.Unspent,
+					}
+
+					Info.Printf("%s has a balance of %s with %d unspent transactions\n", address, balances[address].ToBTC(), len(entry.Unspent))
 				}
 
 			}
+			utm.balances = balances
 			utm.Unlock()
 
 		case <-utm.refreshUnspentTransactionsTicker.C:
 			utm.Lock()
 			utm.addressList = utm.getAddressesToMonitor()
+			Info.Println("Imported addresses:" + strings.Join(utm.addressList, ", "))
 			utm.Unlock()
 		}
 	}
 }
 
 func NewUnspentTransactionMonitor(client *redis.Client) *UnspentTransactionMonitor {
-
 	return &UnspentTransactionMonitor{
+		balances:                         make(map[string]*AddressBalanceMapping),
 		netClient:                        &http.Client{},
 		client:                           client,
 		fetchAddressesTicker:             time.NewTicker(REFRESH_ADDRESSES_TIME),
