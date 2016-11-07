@@ -11,9 +11,9 @@ func init() {
 	Client = redis.NewClient(&redis.Options{
 		Addr:     "localhost:6379",
 		Password: "",
-		DB:       0,
+		DB:       1,
 	})
-	Client.Ping()
+	Client.Del("seen_addresses").Result()
 }
 
 func TestUnspentTransactions(t *testing.T) {
