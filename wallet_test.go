@@ -2,19 +2,7 @@ package wallet
 
 import "testing"
 import "time"
-
 import "gopkg.in/redis.v5"
-
-var Client *redis.Client
-
-func init() {
-	Client = redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
-		Password: "",
-		DB:       1,
-	})
-	Client.Del("seen_addresses").Result()
-}
 
 func TestUnspentTransactions(t *testing.T) {
 	tx := NewUnspentTransactionMonitor(Client)

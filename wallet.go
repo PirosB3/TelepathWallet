@@ -15,8 +15,8 @@ import (
 
 const (
 	SATOSHI_IN_BITCOIN     = 100000000
-	REFRESH_ADDRESSES_TIME = time.Second * 2
-	REFRESH_UTXO_TIME      = time.Second * 3
+	REFRESH_ADDRESSES_TIME = time.Second * 3
+	REFRESH_UTXO_TIME      = time.Second * 5
 	BLOCKR_UTXO_ADDRESS    = "http://btc.blockr.io/api/v1/address/unspent/"
 )
 
@@ -66,7 +66,7 @@ type AddressBalanceMapping struct {
 
 func (abm *AddressBalanceMapping) ToBTC() string {
 	res := float64(abm.Balance) / SATOSHI_IN_BITCOIN
-	return fmt.Sprintf("%f\n", res)
+	return fmt.Sprintf("%f", res)
 }
 
 type UnspentTransactionMonitor struct {
@@ -145,7 +145,9 @@ func (utm *UnspentTransactionMonitor) Run() {
 					address := entry.Address
 					var balance int64
 					for _, record := range entry.Unspent {
-						balance += record.Satoshis()
+						if record.Confirmations > 0 {
+							balance += record.Satoshis()
+						}
 					}
 					balances[address] = &AddressBalanceMapping{
 						Address:             address,

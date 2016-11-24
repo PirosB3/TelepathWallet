@@ -3,13 +3,22 @@ package wallet
 import (
 	"github.com/jinzhu/gorm"
 	_ "github.com/jinzhu/gorm/dialects/sqlite"
+	"gopkg.in/redis.v5"
 	"testing"
 )
 
+var Client *redis.Client
 var testDB *gorm.DB
 var rs *ReserveService
 
 func TestMain(m *testing.M) {
+	Client = redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "",
+		DB:       1,
+	})
+	Client.Del("seen_addresses").Result()
+
 	var err error
 	testDB, err = gorm.Open("sqlite3", ":memory:")
 	if err != nil {
