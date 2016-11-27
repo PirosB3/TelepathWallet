@@ -70,12 +70,20 @@ func (tm *TransactionManager) SpendReserve(
 		Hex: txHexString,
 	}
 	json.NewEncoder(&buffer).Encode(payload)
-	res, _ := tm.netClient.Post(BLOCKR_PUSHTX_ADDRESS, "application/json", &buffer)
+	res, err := tm.netClient.Post(BLOCKR_PUSHTX_ADDRESS, "application/json", &buffer)
+	if err != nil {
+		return err
+	}
 
 	// Decode response
 	defer res.Body.Close()
 	body, _ := ioutil.ReadAll(res.Body)
 	Info.Println(string(body))
+
+	err = tm.reserveInstance.SpendReserve(address, reserve)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 

@@ -45,12 +45,21 @@ func (rs *ReserveService) AddReserveForAddress(address string, amount int64) (st
 	return reserveInstance.Uuid, nil
 }
 
+func (rs *ReserveService) SpendReserve(address, reserve string) error {
+	err := rs.db.Table(
+		"reserves",
+	).Where(
+		"address = ? AND uuid = ? AND spent = ?", address, reserve, false,
+	).Update("spent", true).Error
+	return err
+}
+
 func (rs *ReserveService) GetAmountReservedForReserve(address, reserve string) (int64, error) {
 	var res []*Reserve
 	err := rs.db.Table(
 		"reserves",
 	).Where(
-		"address = ? AND uuid = ?", address, reserve,
+		"address = ? AND uuid = ? AND spent = ?", address, reserve, false,
 	).Scan(&res).Error
 
 	if err != nil {
