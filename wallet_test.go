@@ -1,43 +1,54 @@
 package wallet
 
-import "testing"
-import "time"
-import "gopkg.in/redis.v5"
+import (
+	"encoding/hex"
+	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcutil"
+	"testing"
+)
 
-func TestUnspentTransactions(t *testing.T) {
-	tx := NewUnspentTransactionMonitor(Client)
-	tx.registerAddresses([]string{
-		"myAddress", "hello", "world",
-	})
-	res := tx.makeWalletRequest(tx.GetAddresses())
-	if res != "http://btc.blockr.io/api/v1/address/unspent/myAddress,hello,world" {
+func TestSpendReserve(t *testing.T) {
+	txmgr := NewTransactionManager(
+		NewUnspentTransactionMonitor(Client),
+		NewReserverService(testDB),
+	)
+
+	frmPK, _ := btcec.NewPrivateKey(btcec.S256())
+	frmAddress, _ := btcutil.NewAddressPubKey(frmPK.PubKey().SerializeCompressed(), &chaincfg.MainNetParams)
+
+	toPK, _ := btcec.NewPrivateKey(btcec.S256())
+	toAddress, _ := btcutil.NewAddressPubKey(toPK.PubKey().SerializeCompressed(), &chaincfg.MainNetParams)
+
+	p2pkhFrmAddress, _ := txmgr.makePayToPubkeyHashScript(frmAddress.EncodeAddress())
+	p2pkhFrmAddressString := hex.EncodeToString(p2pkhFrmAddress)
+
+	// Add some balances
+	txmgr.unspentTransactionMonitorInstance.balances = map[string]*AddressBalanceMapping{
+		frmAddress.EncodeAddress(): &AddressBalanceMapping{
+			Balance: 200000000,
+			UnspentTransactions: []BlockrUnspentItem{
+				BlockrUnspentItem{
+					Tx:     "aa631d3cb0c98ada8ddb3ec82f23de2a948819e841a00ad740794837b7fbd7e9",
+					Idx:    0,
+					Script: p2pkhFrmAddressString,
+					Amount: "1.0",
+				},
+				BlockrUnspentItem{
+					Tx:     "8787402b7eed22e236b5aaa9d33c8a52c7499d97b5fa93d354f55b78405db14f",
+					Script: p2pkhFrmAddressString,
+					Idx:    1,
+					Amount: "1.0",
+				},
+			},
+		},
+	}
+
+	reserve, _ := txmgr.reserveInstance.AddReserveForAddress(frmAddress.EncodeAddress(), 120000000)
+
+	res, err := txmgr.MakeTransactionForReserve(frmAddress.EncodeAddress(), reserve, frmPK, toAddress.EncodeAddress())
+	if err != nil {
 		t.Fail()
 	}
-}
-
-func TestUnspentTransaction(t *testing.T) {
-	b := BlockrUnspentItem{
-		Amount: "0.00020000",
-	}
-	if b.Satoshis() != 20000 {
-		t.Fail()
-	}
-}
-
-func TestRedisAddressesSet(t *testing.T) {
-	Client.ZAdd("seen_addresses", redis.Z{
-		float64(time.Now().Unix()), "hello",
-	})
-	Client.ZAdd("seen_addresses", redis.Z{
-		float64(time.Now().Unix()) - 3600, "world",
-	})
-	Client.ZAdd("seen_addresses", redis.Z{
-		float64(0), "old",
-	})
-
-	tx := NewUnspentTransactionMonitor(Client)
-	addresses := tx.getAddressesToMonitor()
-	if len(addresses) != 2 {
-		t.Fail()
-	}
+	t.Log(hex.EncodeToString(res))
 }

@@ -41,16 +41,32 @@ func (rs *ReserveService) AddReserveForAddress(address string, amount int64) (st
 	if err := rs.db.Create(&reserveInstance).Error; err != nil {
 		return "", err
 	}
+
 	return reserveInstance.Uuid, nil
+}
+
+func (rs *ReserveService) GetAmountReservedForReserve(address, reserve string) (int64, error) {
+	var res []*Reserve
+	err := rs.db.Table(
+		"reserves",
+	).Where(
+		"address = ? AND uuid = ?", address, reserve,
+	).Scan(&res).Error
+
+	if err != nil {
+		return -1, err
+	}
+
+	if len(res) != 1 {
+		return -1, errors.New("Reserve does not exist")
+	}
+	return int64(res[0].Amount), nil
 }
 
 func (rs *ReserveService) GetAmountReservedForAddress(address string) int64 {
 	var results []struct {
 		Total uint
 	}
-
-	var ct int64
-	rs.db.Table("reserves").Count(&ct)
 
 	err := rs.db.Table(
 		"reserves",

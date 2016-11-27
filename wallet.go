@@ -1,182 +1,151 @@
 package wallet
 
 import (
+	"bytes"
+	"encoding/hex"
 	"encoding/json"
-	"fmt"
-	"gopkg.in/redis.v5"
-	"log"
+	"errors"
+	"io/ioutil"
 	"net/http"
-	"os"
-	"strconv"
-	"strings"
 	"sync"
-	"time"
+
+	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcutil"
 )
 
-const (
-	SATOSHI_IN_BITCOIN     = 100000000
-	REFRESH_ADDRESSES_TIME = time.Second * 3
-	REFRESH_UTXO_TIME      = time.Second * 5
-	BLOCKR_UTXO_ADDRESS    = "http://btc.blockr.io/api/v1/address/unspent/"
-)
+const BTC_FEE_IN_SATOSHIS = 20400
 
-var (
-	Info  *log.Logger
-	Error *log.Logger
-)
-
-func init() {
-	Info = log.New(os.Stdout,
-		"INFO: ",
-		log.Ldate|log.Ltime|log.Lshortfile)
-	Error = log.New(os.Stdout,
-		"ERROR: ",
-		log.Ldate|log.Ltime|log.Lshortfile)
+type TransactionManager struct {
+	sync.Mutex
+	unspentTransactionMonitorInstance *UnspentTransactionMonitor
+	reserveInstance                   *ReserveService
+	netClient                         *http.Client
 }
 
-type BlockrUnspentItem struct {
-	Tx            string `json:"tx"`
-	Amount        string `json:"amount"`
-	Idx           int    `json:"n"`
-	Confirmations int    `json:"confirmations"`
-}
-
-func (b *BlockrUnspentItem) Satoshis() int64 {
-	amountFloat, err := strconv.ParseFloat(b.Amount, 64)
-	if err != nil {
-		Error.Fatal(err)
+func NewTransactionManager(
+	unspentTransactionMonitorInstance *UnspentTransactionMonitor,
+	reserveInstance *ReserveService,
+) *TransactionManager {
+	return &TransactionManager{
+		unspentTransactionMonitorInstance: unspentTransactionMonitorInstance,
+		reserveInstance:                   reserveInstance,
+		netClient:                         &http.Client{},
 	}
-	res := amountFloat * SATOSHI_IN_BITCOIN
-	return int64(res)
 }
 
-type BlockrUnspentResponse struct {
-	Status string `json:"status"`
-	Data   []struct {
-		Address string              `json:"address"`
-		Unspent []BlockrUnspentItem `json:"unspent"`
-	} `json:"data"`
-}
-
-type AddressBalanceMapping struct {
-	Address             string
-	Balance             int64
-	UnspentTransactions []BlockrUnspentItem
-}
-
-func (abm *AddressBalanceMapping) ToBTC() string {
-	res := float64(abm.Balance) / SATOSHI_IN_BITCOIN
-	return fmt.Sprintf("%f", res)
-}
-
-type UnspentTransactionMonitor struct {
-	sync.RWMutex
-	balances                         map[string]*AddressBalanceMapping
-	netClient                        *http.Client
-	client                           *redis.Client
-	addressList                      []string
-	fetchAddressesTicker             *time.Ticker
-	refreshUnspentTransactionsTicker *time.Ticker
-}
-
-func (utm *UnspentTransactionMonitor) makeWalletRequest(addresses []string) string {
-	addressesStr := strings.Join(addresses, ",")
-	return BLOCKR_UTXO_ADDRESS + addressesStr
-}
-
-func (utm *UnspentTransactionMonitor) GetAddresses() []string {
-	return utm.addressList
-}
-
-func (utm *UnspentTransactionMonitor) registerAddresses(addresses []string) {
-	utm.Lock()
-	utm.addressList = addresses
-	utm.Unlock()
-}
-
-func (utm *UnspentTransactionMonitor) getAddressesToMonitor() []string {
-	start := time.Now()
-	stop := time.Now().Add(-time.Hour * 24)
-	results, err := utm.client.ZRangeByScore("seen_addresses", redis.ZRangeBy{
-		Min: strconv.FormatInt(stop.Unix(), 10),
-		Max: strconv.FormatInt(start.Unix(), 10),
-	}).Result()
+func (tm *TransactionManager) makePayToPubkeyHashScript(address string) ([]byte, error) {
+	dstAddress, err := btcutil.DecodeAddress(address, &chaincfg.MainNetParams)
 	if err != nil {
-		Error.Fatal(err)
+		return nil, err
 	}
-	return results
+	p2pkh, err := txscript.PayToAddrScript(dstAddress)
+	if err != nil {
+		return nil, err
+	}
+	return p2pkh, nil
 }
 
-func (utm *UnspentTransactionMonitor) Run() {
-	for {
-		select {
-		case <-utm.fetchAddressesTicker.C:
-			utm.Lock()
-			addresses := utm.addressList
-			balances := make(map[string]*AddressBalanceMapping)
-			for len(addresses) > 0 {
+func (tm *TransactionManager) SpendReserve(
+	address, reserve string,
+	pk *btcec.PrivateKey,
+	dstAddressString string,
+) error {
+	tm.Lock()
+	defer tm.Unlock()
 
-				var slice uint
-				if len(addresses) > 10 {
-					slice = 10
-				} else {
-					slice = uint(len(addresses))
-				}
+	// Encode the transaction
+	var buffer bytes.Buffer
+	txBytes, err := tm.MakeTransactionForReserve(address, reserve, pk, dstAddressString)
+	if err != nil {
+		return err
+	}
 
-				currentAddresses := addresses[:slice]
-				addresses = addresses[slice:]
+	txHexString := hex.EncodeToString(txBytes)
+	payload := struct {
+		Hex string `json:"hex"`
+	}{
+		Hex: txHexString,
+	}
+	json.NewEncoder(&buffer).Encode(payload)
+	res, _ := tm.netClient.Post(BLOCKR_PUSHTX_ADDRESS, "application/json", &buffer)
 
-				walletRequest := utm.makeWalletRequest(currentAddresses)
-				response, err := utm.netClient.Get(walletRequest)
-				if err != nil {
-					Error.Fatal(err)
-				}
+	// Decode response
+	defer res.Body.Close()
+	body, _ := ioutil.ReadAll(res.Body)
+	Info.Println(string(body))
+	return nil
+}
 
-				var decodedResponse BlockrUnspentResponse
-				decoder := json.NewDecoder(response.Body)
-				decoder.Decode(&decodedResponse)
+func (tm *TransactionManager) MakeTransactionForReserve(
+	address, reserve string,
+	pk *btcec.PrivateKey,
+	dstAddressString string,
+) ([]byte, error) {
 
-				if decodedResponse.Status != "success" {
-					Error.Fatal("Decoded response status: " + decodedResponse.Status)
-				}
+	// Get amount to spend
+	amountToSpend, err := tm.reserveInstance.GetAmountReservedForReserve(address, reserve)
+	if err != nil {
+		return nil, err
+	}
 
-				for _, entry := range decodedResponse.Data {
+	// Get transactions for that amount
+	txIns, scripts, totalSpent := tm.unspentTransactionMonitorInstance.GetTXinsForAddress(
+		address, amountToSpend,
+	)
+	if totalSpent < amountToSpend {
+		return nil, errors.New("Insufficient funds")
+	}
 
-					address := entry.Address
-					var balance int64
-					for _, record := range entry.Unspent {
-						if record.Confirmations > 0 {
-							balance += record.Satoshis()
-						}
-					}
-					balances[address] = &AddressBalanceMapping{
-						Address:             address,
-						Balance:             balance,
-						UnspentTransactions: entry.Unspent,
-					}
+	// Make out scripts
+	dstScript, err := tm.makePayToPubkeyHashScript(dstAddressString)
+	if err != nil {
+		return nil, err
+	}
+	returnScript, err := tm.makePayToPubkeyHashScript(address)
+	if err != nil {
+		return nil, err
+	}
 
-					Info.Printf("%s has a balance of %s with %d unspent transactions\n", address, balances[address].ToBTC(), len(entry.Unspent))
-				}
+	// Make Transaction
+	tx := wire.NewMsgTx()
+	for _, txin := range txIns {
+		tx.AddTxIn(txin)
+	}
+	toDst := amountToSpend - BTC_FEE_IN_SATOSHIS
+	tx.AddTxOut(wire.NewTxOut(
+		toDst, dstScript,
+	))
+	remainder := totalSpent - toDst
+	if remainder > 0 {
+		tx.AddTxOut(wire.NewTxOut(
+			remainder, returnScript,
+		))
+	}
 
-			}
-			utm.balances = balances
-			utm.Unlock()
+	lookupKey := func(a btcutil.Address) (*btcec.PrivateKey, bool, error) {
+		return pk, true, nil
+	}
 
-		case <-utm.refreshUnspentTransactionsTicker.C:
-			utm.Lock()
-			utm.addressList = utm.getAddressesToMonitor()
-			Info.Println("Imported addresses:" + strings.Join(utm.addressList, ", "))
-			utm.Unlock()
+	// Sign transaction
+	for idx, _ := range tx.TxIn {
+		sigScript, err := txscript.SignTxOutput(&chaincfg.MainNetParams,
+			tx, idx, scripts[idx], txscript.SigHashAll,
+			txscript.KeyClosure(lookupKey), nil, nil)
+		if err != nil {
+			return nil, err
 		}
+		tx.TxIn[idx].SignatureScript = sigScript
 	}
-}
 
-func NewUnspentTransactionMonitor(client *redis.Client) *UnspentTransactionMonitor {
-	return &UnspentTransactionMonitor{
-		balances:                         make(map[string]*AddressBalanceMapping),
-		netClient:                        &http.Client{},
-		client:                           client,
-		fetchAddressesTicker:             time.NewTicker(REFRESH_ADDRESSES_TIME),
-		refreshUnspentTransactionsTicker: time.NewTicker(REFRESH_UTXO_TIME),
+	// Post transaction
+	byteBuffer := make([]byte, 0, tx.SerializeSize())
+	buffer := bytes.NewBuffer(byteBuffer)
+	err = tx.Serialize(buffer)
+	if err != nil {
+		return nil, err
 	}
+	return buffer.Bytes(), nil
 }
