@@ -46,9 +46,9 @@ func TestSpendReserve(t *testing.T) {
 
 	reserve, _ := txmgr.reserveInstance.AddReserveForAddress(frmAddress.EncodeAddress(), 120000000)
 
-	res, err := txmgr.MakeTransactionForReserve(frmAddress.EncodeAddress(), reserve, frmPK, toAddress.EncodeAddress())
+	_, err := txmgr.MakeTransactionForReserve(frmAddress.EncodeAddress(), reserve, frmPK, toAddress.EncodeAddress())
 	if err != nil {
 		t.Fail()
 	}
-	t.Log(hex.EncodeToString(res))
+
 }
