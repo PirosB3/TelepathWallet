@@ -159,16 +159,18 @@ func (utm *UnspentTransactionMonitor) GetTXinsForAddress(
 
 func (utm *UnspentTransactionMonitor) GetUTXOBalanceForAddress(address string) (int64, error) {
 	utm.RLock()
+	defer utm.RUnlock()
 	if el, ok := utm.balances[address]; ok {
 		return el.Balance, nil
 	}
-	return -1, errors.New("Address was not found")
+	return -1, errors.New(fmt.Sprintf("Address %s was not found\n", address))
 }
 
 func (utm *UnspentTransactionMonitor) Run() {
 	for {
 		select {
 		case <-utm.fetchAddressesTicker.C:
+			Info.Println("TICK")
 			utm.Lock()
 			addresses := utm.addressList
 			balances := make(map[string]*AddressBalanceMapping)
@@ -185,6 +187,7 @@ func (utm *UnspentTransactionMonitor) Run() {
 				addresses = addresses[slice:]
 
 				walletRequest := utm.makeWalletRequest(currentAddresses)
+				Info.Println(walletRequest)
 				response, err := utm.netClient.Get(walletRequest)
 				if err != nil {
 					Error.Fatal(err)
@@ -219,6 +222,7 @@ func (utm *UnspentTransactionMonitor) Run() {
 			}
 			utm.balances = balances
 			utm.Unlock()
+			Info.Println("TOCK")
 
 		case <-utm.refreshUnspentTransactionsTicker.C:
 			utm.Lock()

@@ -7,8 +7,6 @@ import (
 	"github.com/satori/go.uuid"
 )
 
-var db *gorm.DB
-
 type Reserve struct {
 	gorm.Model
 	Uuid    string
@@ -93,14 +91,4 @@ func (rs *ReserveService) GetAmountReservedForAddress(address string) int64 {
 		return 0
 	}
 	return int64(results[0].Total)
-}
-
-func init() {
-	var err error
-	db, err = gorm.Open("sqlite3", "reserves.db")
-	if err != nil {
-		panic("failed to connect database")
-	}
-
-	db.AutoMigrate(&Reserve{})
 }

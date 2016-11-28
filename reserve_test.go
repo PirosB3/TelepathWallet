@@ -25,6 +25,7 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	testDB.AutoMigrate(&Reserve{})
+	testDB.AutoMigrate(&Account{})
 	rs = NewReserverService(testDB)
 	m.Run()
 }
