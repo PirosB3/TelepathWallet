@@ -85,9 +85,19 @@ type UnspentTransactionMonitor struct {
 	refreshUnspentTransactionsTicker *time.Ticker
 }
 
-func (utm *UnspentTransactionMonitor) makeWalletRequest(addresses []string) string {
+func (utm *UnspentTransactionMonitor) makeWalletRequest(addresses []string) chan (*http.Response) {
 	addressesStr := strings.Join(addresses, ",")
-	return BLOCKR_UTXO_ADDRESS + addressesStr
+	path := BLOCKR_UTXO_ADDRESS + addressesStr
+
+	returnChan := make(chan *http.Response)
+	go func() {
+		res, err := utm.netClient.Get(path)
+		if err != nil {
+			Error.Println(err)
+		}
+		returnChan <- res
+	}()
+	return returnChan
 }
 
 func (utm *UnspentTransactionMonitor) GetAddresses() []string {
@@ -186,37 +196,37 @@ func (utm *UnspentTransactionMonitor) Run() {
 				currentAddresses := addresses[:slice]
 				addresses = addresses[slice:]
 
-				walletRequest := utm.makeWalletRequest(currentAddresses)
-				Info.Println(walletRequest)
-				response, err := utm.netClient.Get(walletRequest)
-				if err != nil {
-					Error.Fatal(err)
-				}
+				walletRequestChannel := utm.makeWalletRequest(currentAddresses)
+				select {
+				case <-time.After(time.Second * 5):
+					Error.Print("Request timed out from server..")
+				case response := <-walletRequestChannel:
+					var decodedResponse BlockrUnspentResponse
+					decoder := json.NewDecoder(response.Body)
+					decoder.Decode(&decodedResponse)
 
-				var decodedResponse BlockrUnspentResponse
-				decoder := json.NewDecoder(response.Body)
-				decoder.Decode(&decodedResponse)
+					if decodedResponse.Status != "success" {
+						Error.Fatal("Decoded response status: " + decodedResponse.Status)
+					}
 
-				if decodedResponse.Status != "success" {
-					Error.Fatal("Decoded response status: " + decodedResponse.Status)
-				}
+					for _, entry := range decodedResponse.Data {
 
-				for _, entry := range decodedResponse.Data {
-
-					address := entry.Address
-					var balance int64
-					for _, record := range entry.Unspent {
-						if record.Confirmations > 0 {
-							balance += record.Satoshis()
+						address := entry.Address
+						var balance int64
+						for _, record := range entry.Unspent {
+							if record.Confirmations > 0 {
+								balance += record.Satoshis()
+							}
 						}
-					}
-					balances[address] = &AddressBalanceMapping{
-						Address:             address,
-						Balance:             balance,
-						UnspentTransactions: entry.Unspent,
+						balances[address] = &AddressBalanceMapping{
+							Address:             address,
+							Balance:             balance,
+							UnspentTransactions: entry.Unspent,
+						}
+
+						Info.Printf("%s has a balance of %s with %d unspent transactions\n", address, balances[address].ToBTC(), len(entry.Unspent))
 					}
 
-					Info.Printf("%s has a balance of %s with %d unspent transactions\n", address, balances[address].ToBTC(), len(entry.Unspent))
 				}
 
 			}

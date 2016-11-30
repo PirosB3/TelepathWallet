@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"github.com/PirosB3/TelepathWallet"
 	"github.com/gorilla/mux"
 	"github.com/jinzhu/gorm"
@@ -48,6 +49,41 @@ func init() {
 
 	DB.AutoMigrate(&wallet.Account{})
 	DB.AutoMigrate(&wallet.Reserve{})
+}
+
+func MakeReserveHandler(writer http.ResponseWriter, request *http.Request) {
+	payload := &struct {
+		Amount  int64
+		Account string
+	}{}
+	err := json.NewDecoder(request.Body).Decode(payload)
+	if err != nil {
+		Error.Fatal(err)
+	}
+
+	_, address := acctMgr.GetKeysForAddress(payload.Account)
+	utxoBalance, err := usm.GetUTXOBalanceForAddress(address.EncodeAddress())
+	if err != nil {
+		Error.Fatal(err)
+	}
+
+	totalReserve := reserve.GetAmountReservedForAddress(address.EncodeAddress())
+
+	available := utxoBalance - totalReserve
+	if payload.Amount > available {
+		Error.Fatal(errors.New("Amount is too high"))
+	}
+
+	idResponse, err := reserve.AddReserveForAddress(address.EncodeAddress(), payload.Amount)
+	if err != nil {
+		Error.Fatal(err)
+	}
+
+	response := struct {
+		ReserveId string
+	}{idResponse}
+
+	json.NewEncoder(writer).Encode(&response)
 }
 
 func AddressHandler(writer http.ResponseWriter, request *http.Request) {
