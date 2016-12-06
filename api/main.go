@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"github.com/PirosB3/TelepathWallet"
 	"github.com/gorilla/mux"
 	"github.com/jinzhu/gorm"
@@ -36,7 +35,7 @@ func init() {
 		log.Ldate|log.Ltime|log.Lshortfile)
 
 	var err error
-	DB, err = gorm.Open("sqlite3", "reserves.db")
+	DB, err = gorm.Open("sqlite3", "mainnet.db")
 	if err != nil {
 		panic("failed to connect database")
 	}
@@ -51,17 +50,45 @@ func init() {
 	DB.AutoMigrate(&wallet.Reserve{})
 }
 
-func MakeReserveHandler(writer http.ResponseWriter, request *http.Request) {
+func SpendReserve(writer http.ResponseWriter, request *http.Request) {
+	vars := mux.Vars(request)
+	username := vars["user"]
+	reserveId := vars["reserve"]
+
 	payload := &struct {
-		Amount  int64
-		Account string
+		DestinationUser string `json:"account"`
 	}{}
 	err := json.NewDecoder(request.Body).Decode(payload)
 	if err != nil {
 		Error.Fatal(err)
 	}
 
-	_, address := acctMgr.GetKeysForAddress(payload.Account)
+	frmPk, frmAddress := acctMgr.GetKeysForAddress(username)
+	_, toAddress := acctMgr.GetKeysForAddress(payload.DestinationUser)
+	err = txMgr.SpendReserve(
+		frmAddress.EncodeAddress(), reserveId,
+		frmPk, toAddress.EncodeAddress(),
+	)
+
+	if err != nil {
+		Error.Fatal(err)
+	}
+
+}
+
+func MakeReserveHandler(writer http.ResponseWriter, request *http.Request) {
+	vars := mux.Vars(request)
+	username := vars["user"]
+
+	payload := &struct {
+		Amount int64
+	}{}
+	err := json.NewDecoder(request.Body).Decode(payload)
+	if err != nil {
+		Error.Fatal(err)
+	}
+
+	_, address := acctMgr.GetKeysForAddress(username)
 	utxoBalance, err := usm.GetUTXOBalanceForAddress(address.EncodeAddress())
 	if err != nil {
 		Error.Fatal(err)
@@ -71,7 +98,11 @@ func MakeReserveHandler(writer http.ResponseWriter, request *http.Request) {
 
 	available := utxoBalance - totalReserve
 	if payload.Amount > available {
-		Error.Fatal(errors.New("Amount is too high"))
+		response := struct {
+			Error string
+		}{"Amount is too high"}
+		json.NewEncoder(writer).Encode(&response)
+		return
 	}
 
 	idResponse, err := reserve.AddReserveForAddress(address.EncodeAddress(), payload.Amount)
@@ -122,6 +153,8 @@ func main() {
 
 	r := mux.NewRouter()
 	r.HandleFunc("/accounts/{user}/address", AddressHandler)
+	r.HandleFunc("/accounts/{user}/reserve", MakeReserveHandler).Methods("POST")
+	r.HandleFunc("/accounts/{user}/reserve/{reserve}/spend", SpendReserve).Methods("POST")
 
 	srv := &http.Server{
 		Handler: r,

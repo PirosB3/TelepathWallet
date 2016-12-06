@@ -38,9 +38,12 @@ func NewTransactionManager(
 
 func (tm *TransactionManager) makePayToPubkeyHashScript(address string) ([]byte, error) {
 	dstAddress, err := btcutil.DecodeAddress(address, &chaincfg.MainNetParams)
+	Info.Println(hex.EncodeToString(dstAddress.ScriptAddress()))
+	Info.Printf("TYPE: %T\n", dstAddress)
 	if err != nil {
 		return nil, err
 	}
+	Info.Println("Address: ", dstAddress)
 	p2pkh, err := txscript.PayToAddrScript(dstAddress)
 	if err != nil {
 		return nil, err
@@ -64,13 +67,16 @@ func (tm *TransactionManager) SpendReserve(
 	}
 
 	txHexString := hex.EncodeToString(txBytes)
+	Info.Println(txHexString)
 	payload := struct {
 		Hex string `json:"hex"`
 	}{
 		Hex: txHexString,
 	}
-	json.NewEncoder(&buffer).Encode(payload)
+	json.NewEncoder(&buffer).Encode(&payload)
+
 	res, err := tm.netClient.Post(BLOCKR_PUSHTX_ADDRESS, "application/json", &buffer)
+
 	if err != nil {
 		return err
 	}
@@ -80,9 +86,11 @@ func (tm *TransactionManager) SpendReserve(
 	body, _ := ioutil.ReadAll(res.Body)
 	Info.Println(string(body))
 
-	err = tm.reserveInstance.SpendReserve(address, reserve)
-	if err != nil {
-		return err
+	if res.StatusCode == 200 || res.StatusCode == 201 {
+		err = tm.reserveInstance.SpendReserve(address, reserve)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -108,11 +116,13 @@ func (tm *TransactionManager) MakeTransactionForReserve(
 	}
 
 	// Make out scripts
+	Info.Println(address, dstAddressString)
 	dstScript, err := tm.makePayToPubkeyHashScript(dstAddressString)
 	if err != nil {
 		return nil, err
 	}
 	returnScript, err := tm.makePayToPubkeyHashScript(address)
+	Info.Println("Return Script:", hex.EncodeToString(returnScript))
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +136,7 @@ func (tm *TransactionManager) MakeTransactionForReserve(
 	tx.AddTxOut(wire.NewTxOut(
 		toDst, dstScript,
 	))
-	remainder := totalSpent - toDst
+	remainder := totalSpent - amountToSpend
 	if remainder > 0 {
 		tx.AddTxOut(wire.NewTxOut(
 			remainder, returnScript,

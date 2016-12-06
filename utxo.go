@@ -129,6 +129,7 @@ func (utm *UnspentTransactionMonitor) GetTXinsForAddress(
 ) ([]*wire.TxIn, [][]byte, int64) {
 
 	utm.RLock()
+	defer utm.RUnlock()
 	var res []*wire.TxIn
 	var scripts [][]byte
 
