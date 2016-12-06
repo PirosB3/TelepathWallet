@@ -65,7 +65,7 @@ func SpendReserve(writer http.ResponseWriter, request *http.Request) {
 
 	frmPk, frmAddress := acctMgr.GetKeysForAddress(username)
 	_, toAddress := acctMgr.GetKeysForAddress(payload.DestinationUser)
-	err = txMgr.SpendReserve(
+	tx, err := txMgr.SpendReserve(
 		frmAddress.EncodeAddress(), reserveId,
 		frmPk, toAddress.EncodeAddress(),
 	)
@@ -74,6 +74,11 @@ func SpendReserve(writer http.ResponseWriter, request *http.Request) {
 		Error.Fatal(err)
 	}
 
+	response := &struct {
+		Transaction string
+	}{tx}
+
+	json.NewEncoder(writer).Encode(response)
 }
 
 func MakeReserveHandler(writer http.ResponseWriter, request *http.Request) {

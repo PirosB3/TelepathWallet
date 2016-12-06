@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io/ioutil"
 	"net/http"
 	"sync"
 
@@ -55,7 +54,7 @@ func (tm *TransactionManager) SpendReserve(
 	address, reserve string,
 	pk *btcec.PrivateKey,
 	dstAddressString string,
-) error {
+) (string, error) {
 	tm.Lock()
 	defer tm.Unlock()
 
@@ -63,7 +62,7 @@ func (tm *TransactionManager) SpendReserve(
 	var buffer bytes.Buffer
 	txBytes, err := tm.MakeTransactionForReserve(address, reserve, pk, dstAddressString)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	txHexString := hex.EncodeToString(txBytes)
@@ -78,21 +77,23 @@ func (tm *TransactionManager) SpendReserve(
 	res, err := tm.netClient.Post(BLOCKR_PUSHTX_ADDRESS, "application/json", &buffer)
 
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	// Decode response
+	response := &struct {
+		Status, Data string
+	}{}
 	defer res.Body.Close()
-	body, _ := ioutil.ReadAll(res.Body)
-	Info.Println(string(body))
+	json.NewDecoder(res.Body).Decode(response)
 
-	if res.StatusCode == 200 || res.StatusCode == 201 {
+	if response.Status == "success" {
 		err = tm.reserveInstance.SpendReserve(address, reserve)
 		if err != nil {
-			return err
+			return response.Data, err
 		}
 	}
-	return nil
+	return response.Data, nil
 }
 
 func (tm *TransactionManager) MakeTransactionForReserve(
